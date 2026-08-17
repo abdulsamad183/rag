@@ -769,8 +769,38 @@ textarea {
   display: none;
 }
 
-.trace-step summary:hover {
-  background: var(--bg-hover);
+.trace-step.running {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  background: var(--bg-raised);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.live-trace {
+  margin-top: 12px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.live-trace-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.live-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .trace-step .payload,

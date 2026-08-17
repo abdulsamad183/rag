@@ -26,7 +26,10 @@ export default function SettingsPage() {
 
       {config?.local_mode && (
         <div className="abstained-banner" style={{ marginBottom: 18 }}>
-          Local mode is on: generation and embeddings are restricted to Ollama. Web retrieval is disabled.
+          Local mode is on: generation and embeddings are restricted to Ollama.
+          {config.web_search_enabled
+            ? " Web search is available in chat (KB + Web / Web only)."
+            : " Web search is off (set WEB_SEARCH_PROVIDER=ddg in .env)."}
         </div>
       )}
 
@@ -68,8 +71,8 @@ export default function SettingsPage() {
               <dd>{config.chunking_strategies.join(", ")}</dd>
               <dt>Retrieval strategies</dt>
               <dd>{config.retrieval_strategies.join(", ")}</dd>
-              <dt>Rerankers</dt>
-              <dd>{config.rerankers.join(", ")}</dd>
+              <dt>Web search</dt>
+              <dd>{config.web_search_enabled ? "enabled (DuckDuckGo HTML)" : "off"}</dd>
             </dl>
           </div>
         </>

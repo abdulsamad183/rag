@@ -5,10 +5,12 @@ import type {
   ChatMode,
   ChatRequestBody,
   ChatResponse,
+  ChatScope,
   Citation,
   Conversation,
   Evidence,
   Message,
+  TraceStep,
 } from "../api/types";
 import { ConfidenceBadge } from "../components/Confidence";
 import EmptyState from "../components/EmptyState";
@@ -34,6 +36,7 @@ const STAGE_LABEL: Record<string, string> = {
   generating: "Writing an answer…",
   verifying: "Verifying claims…",
   correcting: "Retrieving more evidence…",
+  searching_web: "Searching the web…",
 };
 
 interface ChatTurn {
@@ -44,6 +47,7 @@ interface ChatTurn {
   response?: ChatResponse;
   citations?: Citation[];
   traceId?: string | null;
+  liveSteps?: TraceStep[];
 }
 
 function citationsToEvidence(citations: Citation[]): Evidence[] {
@@ -55,7 +59,7 @@ function citationsToEvidence(citations: Citation[]): Evidence[] {
     content: c.snippet,
     score: c.relevance_score,
     scores: {},
-    source_type: "",
+    source_type: c.source_type || (c.source_url?.startsWith("http") ? "web" : ""),
     page: c.page,
     section: c.section,
     trust: 0.6,
@@ -125,10 +129,10 @@ export default function ChatPage() {
   const [highlight, setHighlight] = useState<number | null>(null);
   const [source, setSource] = useState<Evidence | Citation | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(false);
 
   const [collectionIds, setCollectionIds] = useState<string[]>(() => loadPref("rag.cols", []));
   const [mode, setMode] = useState<ChatMode>(() => loadPref("rag.mode", "adaptive"));
+  const [scope, setScope] = useState<ChatScope>(() => loadPref("rag.scope", "kb"));
   const [provider, setProvider] = useState(() => loadPref("rag.provider", ""));
   const [model, setModel] = useState(() => loadPref("rag.model", ""));
   const [temperature, setTemperature] = useState(0.1);
@@ -152,7 +156,8 @@ export default function ChatPage() {
     localStorage.setItem("rag.mode", JSON.stringify(mode));
     localStorage.setItem("rag.provider", JSON.stringify(provider));
     localStorage.setItem("rag.model", JSON.stringify(model));
-  }, [collectionIds, mode, provider, model]);
+    localStorage.setItem("rag.scope", JSON.stringify(scope));
+  }, [collectionIds, mode, provider, model, scope]);
 
   useEffect(() => {
     if (!provider && (config || providers.length)) {
@@ -170,6 +175,12 @@ export default function ChatPage() {
       setCollectionIds([collections[0].id]);
     }
   }, [collections, collectionIds.length]);
+
+  useEffect(() => {
+    if (!config?.web_search_enabled && scope !== "kb") {
+      setScope("kb");
+    }
+  }, [config?.web_search_enabled, scope]);
 
   useEffect(() => {
     if (config?.retrieval_defaults) {
@@ -256,7 +267,7 @@ export default function ChatPage() {
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
-    if (!collectionIds.length) {
+    if (scope !== "web" && !collectionIds.length) {
       toast("Select at least one collection.", "error");
       return;
     }
@@ -275,6 +286,7 @@ export default function ChatPage() {
       mode,
       provider: provider || null,
       model: model || null,
+      scope,
       debug,
     };
     if (showAdvanced) {
@@ -290,6 +302,13 @@ export default function ChatPage() {
 
     abortRef.current = streamChat(body, {
       onStatus: (s) => setStage(s),
+      onStep: (step) => {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId ? { ...t, liveSteps: [...(t.liveSteps ?? []), step] } : t,
+          ),
+        );
+      },
       onMeta: ({ conversation_id }) => {
         if (!convIdRef.current) navigate(`/chat/${conversation_id}`, { replace: true });
       },
@@ -309,6 +328,7 @@ export default function ChatPage() {
                   response,
                   citations: response.citations,
                   traceId: response.trace_id,
+                  liveSteps: response.debug_steps ?? t.liveSteps,
                 }
               : t,
           ),
@@ -343,7 +363,8 @@ export default function ChatPage() {
     if (conversationId === id) newChat();
   }
 
-  const composerDisabled = busy || backendDown || !collectionIds.length;
+  const webEnabled = Boolean(config?.web_search_enabled);
+  const composerDisabled = busy || backendDown || (scope !== "web" && !collectionIds.length);
 
   return (
     <div className="chat-layout">
@@ -409,6 +430,25 @@ export default function ChatPage() {
                     ) : (
                       <span className="dim">…</span>
                     )}
+                    {(turn.streaming || (turn.liveSteps && turn.liveSteps.length > 0)) && (
+                      <div className="live-trace">
+                        <div className="live-trace-head">
+                          <span>Pipeline</span>
+                          {turn.streaming ? (
+                            <span className="badge accent">live</span>
+                          ) : (
+                            <span className="faint">{turn.liveSteps?.length ?? 0} steps</span>
+                          )}
+                        </div>
+                        <TraceSteps
+                          steps={turn.liveSteps ?? []}
+                          runningLabel={
+                            turn.streaming ? (STAGE_LABEL[stage] ?? "Working…") : undefined
+                          }
+                          openLast={Boolean(turn.streaming)}
+                        />
+                      </div>
+                    )}
                     {turn.response && (
                       <div className="meta-row">
                         <ConfidenceBadge confidence={turn.response.confidence} />
@@ -431,24 +471,10 @@ export default function ChatPage() {
                         )}
                       </div>
                     )}
-                    {debug && turn.response?.debug_steps && (
-                      <div style={{ marginTop: 12 }}>
-                        <button className="btn ghost small" onClick={() => setDebugOpen(!debugOpen)}>
-                          {debugOpen ? "Hide steps" : "Pipeline steps"}
-                        </button>
-                        {debugOpen && <TraceSteps steps={turn.response.debug_steps} />}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
             ))}
-            {busy && (
-              <div className="status-line">
-                <span className="spinner" />
-                {STAGE_LABEL[stage] ?? "Working…"}
-              </div>
-            )}
             {error && <div className="abstained-banner" style={{ color: "var(--red)" }}>{error}</div>}
           </div>
         </div>
@@ -458,9 +484,11 @@ export default function ChatPage() {
             <textarea
               rows={2}
               placeholder={
-                selectedCollections.length
-                  ? `Ask ${selectedCollections.map((c) => c.name).join(", ")}…`
-                  : "Select a collection first"
+                scope === "web"
+                  ? "Ask the public web…"
+                  : selectedCollections.length
+                    ? `Ask ${selectedCollections.map((c) => c.name).join(", ")}…`
+                    : "Select a collection first"
               }
               value={input}
               disabled={busy}
@@ -484,6 +512,24 @@ export default function ChatPage() {
                     {m}
                   </option>
                 ))}
+              </select>
+              <select
+                className="mini-select"
+                value={scope}
+                title={
+                  webEnabled
+                    ? "Where to search"
+                    : "Set WEB_SEARCH_PROVIDER=ddg in .env, then restart the API"
+                }
+                onChange={(e) => setScope(e.target.value as ChatScope)}
+              >
+                <option value="kb">KB only</option>
+                <option value="kb_web" disabled={!webEnabled}>
+                  KB + Web
+                </option>
+                <option value="web" disabled={!webEnabled}>
+                  Web only
+                </option>
               </select>
               <ProviderModelSelect
                 compact
@@ -639,6 +685,20 @@ export default function ChatPage() {
               <>
                 <dt>Relevance</dt>
                 <dd>{source.relevance_score.toFixed(3)}</dd>
+              </>
+            )}
+            {("source_url" in source ? source.source_url : source.url) && (
+              <>
+                <dt>URL</dt>
+                <dd>
+                  <a
+                    href={"source_url" in source ? source.source_url : source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {"source_url" in source ? source.source_url : source.url}
+                  </a>
+                </dd>
               </>
             )}
           </dl>

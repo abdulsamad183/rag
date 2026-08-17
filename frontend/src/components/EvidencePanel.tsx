@@ -13,11 +13,19 @@ function EvidenceCard({ item, highlighted }: { item: Evidence; highlighted: bool
         <span className="citation-chip" style={{ cursor: "default" }}>
           {item.marker}
         </span>
+        {item.source_type === "web" && <span className="badge accent">WEB</span>}
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {item.document_name}
         </span>
         {item.page != null && <span className="faint">p.{item.page}</span>}
       </div>
+      {item.url && (
+        <div className="faint" style={{ fontSize: 11, marginBottom: 5 }}>
+          <a href={item.url} target="_blank" rel="noreferrer">
+            {item.url}
+          </a>
+        </div>
+      )}
       {item.section && (
         <div className="faint" style={{ fontSize: 11, marginBottom: 5 }}>
           {item.section}

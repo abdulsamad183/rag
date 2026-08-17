@@ -57,10 +57,16 @@ class EvidenceItem:
 
 def render_evidence(items: list[EvidenceItem]) -> str:
     """Prompt rendering. Evidence is wrapped in tags and explicitly framed as
-    untrusted data by the system prompt."""
+    untrusted data by the system prompt. Knowledge-base blocks are listed
+    before web blocks so the model prefers them when both exist."""
+    ordered = sorted(items, key=lambda item: (item.source_type == "web", item.marker))
     parts = []
-    for item in items:
-        header = f'<evidence id={item.marker} document="{item.document_name}"'
+    for item in ordered:
+        origin = "web" if item.source_type == "web" else "kb"
+        header = f'<evidence id={item.marker} origin="{origin}" document="{item.document_name}"'
+        url = item.meta.get("url", "")
+        if url:
+            header += f' url="{url}"'
         if item.page:
             header += f" page={item.page}"
         if item.section:
@@ -141,7 +147,9 @@ class EvidenceBuilder:
         items: list[EvidenceItem] = []
         budget = self.max_context_tokens
         marker = 1
-        for candidate in sorted(candidates, key=lambda c: c.score, reverse=True):
+        for candidate in sorted(
+            candidates, key=lambda c: (c.source_type == "web", -c.score)
+        ):
             cost = estimate_tokens(candidate.content)
             if cost > budget and items:
                 continue

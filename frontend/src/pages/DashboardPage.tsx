@@ -70,6 +70,8 @@ export default function DashboardPage() {
               <dd>{health.checks.redis.ok ? "ok" : health.checks.redis.note ?? "fallback"}</dd>
               <dt>Local mode</dt>
               <dd>{config?.local_mode ? "on" : "off"}</dd>
+              <dt>Web search</dt>
+              <dd>{config?.web_search_enabled ? "on" : "off"}</dd>
               <dt>Ready</dt>
               <dd>{health.ready ? "yes" : "no"}</dd>
             </dl>

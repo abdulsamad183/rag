@@ -11,9 +11,13 @@ const STEP_LABELS: Record<string, string> = {
   claim_verification: "Claim verification",
   self_correction: "Self-correction",
   contradiction_check: "Contradiction check",
+  contradictions: "Contradiction check",
   confidence: "Confidence scoring",
   abstention: "Abstention decision",
   provider_fallback: "Provider fallback",
+  web_search: "Web search",
+  verify_claims: "Verify claims",
+  final: "Final decision",
 };
 
 function label(name: string): string {
@@ -22,11 +26,23 @@ function label(name: string): string {
   return name.replace(/_/g, " ");
 }
 
-export default function TraceSteps({ steps }: { steps: TraceStep[] }) {
+export default function TraceSteps({
+  steps,
+  runningLabel,
+  openLast = false,
+}: {
+  steps: TraceStep[];
+  runningLabel?: string;
+  openLast?: boolean;
+}) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div className="live-trace-list">
       {steps.map((step, index) => (
-        <details key={index} className="trace-step">
+        <details
+          key={`${step.name}-${index}`}
+          className="trace-step"
+          open={openLast && index === steps.length - 1 && !runningLabel}
+        >
           <summary>
             <span className={`step-dot ${step.status}`} />
             <span style={{ fontWeight: 500 }}>{label(step.name)}</span>
@@ -39,6 +55,12 @@ export default function TraceSteps({ steps }: { steps: TraceStep[] }) {
           <div className="payload">{JSON.stringify(step.payload, null, 2)}</div>
         </details>
       ))}
+      {runningLabel && (
+        <div className="trace-step running">
+          <span className="spinner" />
+          <span style={{ fontWeight: 500 }}>{runningLabel}</span>
+        </div>
+      )}
     </div>
   );
 }

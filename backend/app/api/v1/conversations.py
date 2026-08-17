@@ -42,6 +42,7 @@ async def get_conversation(conversation_id: uuid.UUID, session: DbSession) -> Co
                 section=c.section,
                 snippet=c.snippet,
                 source_url=c.source_url,
+                source_type="web" if (c.source_url or "").startswith("http") else "",
                 relevance_score=c.relevance_score,
             )
             for c in citations.get(str(message.id), [])

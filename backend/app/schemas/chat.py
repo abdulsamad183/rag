@@ -3,12 +3,12 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
-    collection_ids: list[uuid.UUID] = Field(min_length=1)
+    collection_ids: list[uuid.UUID] = Field(default_factory=list)
     conversation_id: uuid.UUID | None = None
     mode: Literal["fast", "balanced", "adaptive", "deep", "research"] = "adaptive"
     provider: str | None = Field(default=None, description="openai | groq | gemini | ollama")
@@ -27,6 +27,12 @@ class ChatRequest(BaseModel):
     scope: Literal["kb", "kb_web", "web"] = "kb"
     debug: bool = False
 
+    @model_validator(mode="after")
+    def require_collections_unless_web(self) -> ChatRequest:
+        if self.scope != "web" and not self.collection_ids:
+            raise ValueError("Select at least one collection unless search scope is Web only.")
+        return self
+
 
 class CitationOut(BaseModel):
     marker: int
@@ -37,6 +43,7 @@ class CitationOut(BaseModel):
     section: str = ""
     snippet: str = ""
     source_url: str = ""
+    source_type: str = ""
     relevance_score: float = 0.0
 
 

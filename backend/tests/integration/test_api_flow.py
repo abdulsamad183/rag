@@ -232,9 +232,14 @@ async def test_chat_stream_sse(client):
 
     kinds = [k for k, _ in events]
     assert "token" in kinds
+    assert "status" in kinds
+    assert "step" in kinds
     assert "final" in kinds
+    step_names = [p["name"] for k, p in events if k == "step"]
+    assert "query_analysis" in step_names
     final = next(p for k, p in events if k == "final")
     assert final["answer"]
+    assert final["debug_steps"]
     streamed_text = "".join(p.get("text", "") for k, p in events if k == "token")
     assert streamed_text.strip()
 

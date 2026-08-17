@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.config.profiles import get_profile
+from app.core.errors import EmbeddingMismatchError, ValidationFailed
 from app.core.logging import get_logger
 from app.embeddings.registry import get_embedder
 from app.llm.registry import get_llm
@@ -51,6 +53,7 @@ async def execute_chat(
     params: PipelineParams,
     on_token: StreamCallback | None = None,
     on_status: StreamCallback | None = None,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[PipelineResult, Message, RetrievalTrace]:
     collection_ids = [uuid.UUID(c) for c in conversation.collection_ids]
     collections = await collection_repo.get_collections(session, collection_ids)
@@ -58,20 +61,22 @@ async def execute_chat(
 
     history = await conversation_repo.get_messages(session, conversation.id)
 
-    # All selected collections must share one embedding space.
-    first = collections[0]
-    for other in collections[1:]:
-        if (
-            other.embedding_provider != first.embedding_provider
-            or other.embedding_model != first.embedding_model
-        ):
-            from app.core.errors import EmbeddingMismatchError
+    if not collections and params.scope != "web":
+        raise ValidationFailed("Select at least one collection unless search scope is Web only.")
 
-            raise EmbeddingMismatchError(
-                "Selected collections use different embedding models and cannot be "
-                "searched together. Select collections that share an embedding model."
-            )
-    embedder = get_embedder(first.embedding_provider, first.embedding_model)
+    embedder = None
+    if collections:
+        first = collections[0]
+        for other in collections[1:]:
+            if (
+                other.embedding_provider != first.embedding_provider
+                or other.embedding_model != first.embedding_model
+            ):
+                raise EmbeddingMismatchError(
+                    "Selected collections use different embedding models and cannot be "
+                    "searched together. Select collections that share an embedding model."
+                )
+        embedder = get_embedder(first.embedding_provider, first.embedding_model)
 
     pipeline = RAGPipeline(
         session=session,
@@ -80,6 +85,8 @@ async def execute_chat(
         params=params,
         embedder=embedder,
     )
+    if on_step is not None:
+        pipeline.trace.on_emit = lambda record: on_step(record.as_dict())
     result = await pipeline.run(
         message_text,
         history=history,
@@ -144,11 +151,21 @@ async def execute_chat(
     await session.flush()
 
     for citation in result.citations:
+        is_web = citation.get("source_type") == "web"
+        chunk_id = None
+        document_id = None
+        if not is_web:
+            try:
+                chunk_id = uuid.UUID(str(citation["chunk_id"]))
+                document_id = uuid.UUID(str(citation["document_id"]))
+            except (ValueError, TypeError, KeyError):
+                chunk_id = None
+                document_id = None
         session.add(
             Citation(
                 message_id=assistant_message.id,
-                chunk_id=uuid.UUID(citation["chunk_id"]),
-                document_id=uuid.UUID(citation["document_id"]),
+                chunk_id=chunk_id,
+                document_id=document_id,
                 marker=citation["marker"],
                 document_name=citation["document_name"],
                 page=citation.get("page"),
@@ -193,6 +210,7 @@ def build_pipeline_params(payload: dict[str, Any]) -> PipelineParams:
         max_hops=payload.get("max_hops"),
         confidence_threshold=payload.get("confidence_threshold"),
         allow_fallback=bool(payload.get("allow_fallback", False)),
+        scope=payload.get("scope") or "kb",
     )
     if settings.local_mode:
         params.provider = "ollama"

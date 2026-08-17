@@ -12,8 +12,10 @@ restructuring the pipeline.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,7 +38,7 @@ class TraceStep:
             "name": self.name,
             "status": self.status,
             "latency_ms": self.latency_ms,
-            "payload": self.payload,
+            "payload": _json_safe(self.payload),
         }
 
 
@@ -55,6 +57,7 @@ class TraceRecorder:
         }
     )
     retrieved: list[dict[str, Any]] = field(default_factory=list)
+    on_emit: Callable[[TraceStep], None] | None = field(default=None, repr=False, compare=False)
     _started: float = field(default_factory=time.perf_counter)
 
     @contextmanager
@@ -71,16 +74,27 @@ class TraceRecorder:
         finally:
             record.latency_ms = int((time.perf_counter() - started) * 1000)
             self.steps.append(record)
-            logger.info(
-                "pipeline_step",
-                request_id=self.request_id,
-                step=name,
-                status=record.status,
-                latency_ms=record.latency_ms,
-            )
+            self._publish(record)
 
     def add_step(self, name: str, status: str = "ok", **payload: Any) -> None:
-        self.steps.append(TraceStep(name=name, status=status, payload=dict(payload)))
+        record = TraceStep(name=name, status=status, payload=dict(payload))
+        self.steps.append(record)
+        self._publish(record)
+
+    def _publish(self, record: TraceStep) -> None:
+        logger.info(
+            "pipeline_step",
+            request_id=self.request_id,
+            step=record.name,
+            status=record.status,
+            latency_ms=record.latency_ms,
+        )
+        if self.on_emit is None:
+            return
+        try:
+            self.on_emit(record)
+        except Exception:  # noqa: BLE001 — live UI must not fail the pipeline
+            logger.warning("trace_emit_failed", step=record.name)
 
     def add_llm_usage(
         self, provider: str, model: str, prompt_tokens: int, completion_tokens: int
@@ -106,3 +120,11 @@ class TraceRecorder:
 
     def steps_as_dicts(self) -> list[dict[str, Any]]:
         return [s.as_dict() for s in self.steps]
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return json.loads(json.dumps(value, default=str))

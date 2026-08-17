@@ -36,6 +36,22 @@ async def test_builder_orders_by_score_and_assigns_markers(trace):
     assert items[0].content.startswith("high")
 
 
+async def test_builder_packs_kb_before_higher_scoring_web(trace):
+    kb = make_chunk("knowledge base retention policy text " * 8, 0.4)
+    web = make_chunk("web page retention policy text " * 8, 0.95)
+    web.source_type = "web"
+    web.meta = {"url": "https://example.com/aurora", "origin": "web"}
+    builder = EvidenceBuilder(max_context_tokens=5000)
+    items = await builder.build([web, kb], session=None, trace=trace, expand_parents=False)
+    assert items[0].source_type != "web"
+    assert items[1].source_type == "web"
+    rendered = render_evidence(items)
+    kb_pos = rendered.find('origin="kb"')
+    web_pos = rendered.find('origin="web"')
+    assert 0 <= kb_pos < web_pos
+    assert 'url="https://example.com/aurora"' in rendered
+
+
 async def test_builder_drops_near_duplicates(trace):
     text = "aurora keeps snapshots for thirty days in the retention policy " * 5
     chunks = [make_chunk(text, 0.9), make_chunk(text + " extra", 0.8),
@@ -67,6 +83,8 @@ def test_render_evidence_format():
     builder = EvidenceBuilder(max_context_tokens=1000)
     packed = builder._pack(items_input)
     rendered = render_evidence(packed)
-    assert '<evidence id=1 document="Report 2024">' in rendered
+    assert 'id=1' in rendered
+    assert 'origin="kb"' in rendered
+    assert 'document="Report 2024"' in rendered
     assert "The retention is 30 days." in rendered
     assert "</evidence>" in rendered

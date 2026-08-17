@@ -40,8 +40,9 @@ from app.rag.confidence import ConfidenceReport, compute_confidence
 from app.rag.evidence import EvidenceBuilder, EvidenceItem, render_evidence
 from app.rag.memory import build_generation_context, contextualize_query
 from app.rag.query_analysis import analyze_query
+from app.rag.web import get_web_search, web_results_to_chunks
 from app.reranking import get_reranker
-from app.retrieval.base import Query, QueryFilters, RetrievalContext
+from app.retrieval.base import Query, QueryFilters, RetrievalContext, RetrievalResult, RetrievedChunk
 from app.retrieval.fusion import deduplicate, reciprocal_rank_fusion
 from app.retrieval.registry import get_strategy
 from app.utils.text import term_coverage
@@ -51,7 +52,7 @@ logger = get_logger("pipeline")
 _MARKER = re.compile(r"\[(\d{1,2})\]")
 INSUFFICIENT_TOKEN = "INSUFFICIENT_EVIDENCE"
 ABSTAIN_MESSAGE = (
-    "I don't have enough evidence in the selected knowledge base to answer this reliably."
+    "I don't have enough evidence in the selected sources to answer this reliably."
 )
 
 StreamCallback = Callable[[str], Awaitable[None]]
@@ -71,6 +72,7 @@ class PipelineParams:
     max_hops: int | None = None
     confidence_threshold: float | None = None  # abstain below this
     allow_fallback: bool = False
+    scope: str = "kb"  # kb | kb_web | web
     filters: QueryFilters = field(default_factory=QueryFilters)
 
 
@@ -99,7 +101,7 @@ class RAGPipeline:
         collections: list[Collection],
         profile: Profile,
         params: PipelineParams,
-        embedder: CachingEmbedder,
+        embedder: CachingEmbedder | None,
         settings: Settings | None = None,
     ):
         self.session = session
@@ -149,9 +151,24 @@ class RAGPipeline:
             "adaptive" if self.profile.default_strategy == "auto" else self.profile.default_strategy
         )
         graph_available = any(c.graph_enabled for c in self.collections)
-        strategy = get_strategy(strategy_name, self.profile, graph_available)
         query = Query(text=query_text, filters=self._merge_filters(analysis), analysis=analysis)
-        retrieval = await strategy.retrieve(query, context)
+        scope = self.params.scope if self.params.scope in ("kb", "kb_web", "web") else "kb"
+        if scope != "web" and self.collections and self.embedder is not None:
+            strategy = get_strategy(strategy_name, self.profile, graph_available)
+            retrieval = await strategy.retrieve(query, context)
+        else:
+            retrieval = RetrievalResult(chunks=[], strategy="web", queries_used=[query_text])
+
+        if scope in ("kb_web", "web"):
+            await status("searching_web")
+            web_chunks = await self._web_retrieve(query_text)
+            if web_chunks:
+                retrieval.chunks = list(retrieval.chunks) + web_chunks
+                if scope == "web":
+                    retrieval.strategy = "web"
+                elif retrieval.strategy != "web":
+                    retrieval.strategy = f"{retrieval.strategy}+web"
+                retrieval.notes.append(f"web_results={len(web_chunks)}")
 
         # 4. Rerank
         top_k = self.params.rerank_top_k or settings.rerank_top_k
@@ -418,9 +435,11 @@ class RAGPipeline:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("gap_query_failed", error=str(exc)[:150])
 
-            extra = await get_strategy("hybrid", self.profile).retrieve(
-                Query(text=gap_query, filters=query.filters, analysis=query.analysis), context
-            )
+            extra = RetrievalResult(chunks=[], strategy="none", queries_used=[])
+            if self.collections and self.embedder is not None:
+                extra = await get_strategy("hybrid", self.profile).retrieve(
+                    Query(text=gap_query, filters=query.filters, analysis=query.analysis), context
+                )
             merged_chunks = deduplicate(
                 reciprocal_rank_fusion([extra.chunks])
             )
@@ -533,6 +552,7 @@ class RAGPipeline:
                     "section": item.section,
                     "snippet": item.content[:400],
                     "source_url": item.meta.get("url", ""),
+                    "source_type": item.source_type,
                     "relevance_score": round(item.score, 4),
                 }
             )
@@ -544,7 +564,7 @@ class RAGPipeline:
         self.trace.add_step("abstention", triggered=True, reason=reason)
         confidence = ConfidenceReport(score=0.0, level="insufficient", signals={}, weights={})
         return PipelineResult(
-            answer=f"{ABSTAIN_MESSAGE} No relevant evidence was found in the selected collections.",
+            answer=f"{ABSTAIN_MESSAGE} No relevant evidence was found.",
             abstained=True,
             strategy=strategy,
             provider=self.provider_name,
@@ -557,3 +577,21 @@ class RAGPipeline:
             trace=self.trace,
             queries_used=queries,
         )
+
+    async def _web_retrieve(self, query_text: str) -> list[RetrievedChunk]:
+        tool = get_web_search()
+        with self.trace.step("web_search", provider=tool.name, query=query_text[:200]) as step:
+            if tool.name in ("", "none"):
+                step.payload["results"] = 0
+                step.payload["disabled"] = True
+                return []
+            try:
+                results = await tool.search(query_text, max_results=5)
+            except Exception as exc:  # noqa: BLE001 — web is best-effort
+                logger.warning("web_search_failed", error=str(exc)[:200])
+                step.payload["error"] = str(exc)[:200]
+                return []
+            chunks = web_results_to_chunks(results)
+            step.payload["results"] = len(chunks)
+            step.payload["urls"] = [item.url for item in results]
+            return chunks

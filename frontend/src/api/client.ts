@@ -18,6 +18,7 @@ import type {
   RunComparison,
   TraceDetail,
   TraceSummary,
+  TraceStep,
   UploadResult,
 } from "./types";
 
@@ -142,6 +143,7 @@ export const api = {
 
 export interface StreamHandlers {
   onStatus?: (stage: string) => void;
+  onStep?: (step: TraceStep) => void;
   onMeta?: (meta: { conversation_id: string }) => void;
   onToken: (text: string) => void;
   onFinal: (response: ChatResponse) => void;
@@ -195,6 +197,9 @@ export function streamChat(body: ChatRequestBody, handlers: StreamHandlers): () 
             switch (currentEvent) {
               case "status":
                 handlers.onStatus?.(payload.stage);
+                break;
+              case "step":
+                handlers.onStep?.(payload as TraceStep);
                 break;
               case "meta":
                 handlers.onMeta?.(payload);

@@ -38,6 +38,7 @@ _ENV = {
     "GROQ_API_KEY": "",
     "GEMINI_API_KEY": "",
     "LOCAL_MODE": "0",
+    "WEB_SEARCH_PROVIDER": "none",
 }
 for key, value in _ENV.items():
     os.environ[key] = value

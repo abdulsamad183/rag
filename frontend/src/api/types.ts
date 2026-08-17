@@ -108,6 +108,7 @@ export interface Citation {
   section: string;
   snippet: string;
   source_url: string;
+  source_type?: string;
   relevance_score: number;
 }
 
@@ -148,6 +149,7 @@ export interface Verification {
 }
 
 export type ChatMode = "fast" | "balanced" | "adaptive" | "deep" | "research";
+export type ChatScope = "kb" | "kb_web" | "web";
 
 export interface ChatRequestBody {
   message: string;
@@ -166,7 +168,7 @@ export interface ChatRequestBody {
   max_hops?: number;
   confidence_threshold?: number;
   allow_fallback?: boolean;
-  scope?: "kb" | "kb_web" | "web";
+  scope?: ChatScope;
   debug?: boolean;
 }
 

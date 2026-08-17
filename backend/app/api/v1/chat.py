@@ -21,7 +21,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 def _to_response(
-    result: PipelineResult, request: ChatRequest, conversation_id, message_id, trace_id
+    result: PipelineResult,
+    request: ChatRequest,
+    conversation_id,
+    message_id,
+    trace_id,
+    *,
+    include_steps: bool = False,
 ) -> ChatResponse:
     return ChatResponse(
         conversation_id=conversation_id,
@@ -42,7 +48,7 @@ def _to_response(
         fallback_used=result.fallback_used,
         usage=result.trace.usage,
         latency_ms=result.trace.elapsed_ms,
-        debug_steps=result.trace.steps_as_dicts() if request.debug else None,
+        debug_steps=result.trace.steps_as_dicts() if (request.debug or include_steps) else None,
     )
 
 
@@ -62,9 +68,10 @@ async def chat(request: ChatRequest, session: DbSession, user: CurrentUser) -> C
 async def chat_stream(request: ChatRequest, session: DbSession, user: CurrentUser) -> StreamingResponse:
     """Server-Sent Events stream.
 
-    Events: ``status`` (pipeline stage), ``meta`` (ids), ``token`` (answer
-    delta), ``final`` (full verified payload — the authoritative answer, which
-    may differ from streamed draft if self-correction ran), ``error``.
+    Events: ``status`` (pipeline stage), ``step`` (completed trace step),
+    ``meta`` (ids), ``token`` (answer delta), ``final`` (full verified payload
+    — the authoritative answer, which may differ from streamed draft if
+    self-correction ran), ``error``.
     """
     queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
 
@@ -73,6 +80,9 @@ async def chat_stream(request: ChatRequest, session: DbSession, user: CurrentUse
 
     async def on_status(stage: str) -> None:
         await queue.put(("status", {"stage": stage}))
+
+    def on_step(step: dict[str, Any]) -> None:
+        queue.put_nowait(("step", step))
 
     async def run() -> None:
         try:
@@ -83,10 +93,11 @@ async def chat_stream(request: ChatRequest, session: DbSession, user: CurrentUse
             params = build_pipeline_params(request.model_dump())
             result, assistant_message, trace_row = await execute_chat(
                 session, user, conversation, request.message, request.mode, params,
-                on_token=on_token, on_status=on_status,
+                on_token=on_token, on_status=on_status, on_step=on_step,
             )
             response = _to_response(
-                result, request, conversation.id, assistant_message.id, trace_row.id
+                result, request, conversation.id, assistant_message.id, trace_row.id,
+                include_steps=True,
             )
             await queue.put(("final", json.loads(response.model_dump_json())))
         except AppError as exc:
@@ -105,7 +116,7 @@ async def chat_stream(request: ChatRequest, session: DbSession, user: CurrentUse
                 if item is None:
                     break
                 event, data = item
-                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+                yield f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
         finally:
             if not task.done():
                 task.cancel()
