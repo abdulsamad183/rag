@@ -1,8 +1,16 @@
 import { useState } from "react";
-import type { ChatResponse, Evidence } from "../api/types";
+import type { ChatResponse, Citation, Evidence } from "../api/types";
 import { ConfidenceRing, ConfidenceSignals } from "./Confidence";
 
-function EvidenceCard({ item, highlighted }: { item: Evidence; highlighted: boolean }) {
+function EvidenceCard({
+  item,
+  highlighted,
+  onOpen,
+}: {
+  item: Evidence;
+  highlighted: boolean;
+  onOpen?: (item: Evidence) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div
@@ -10,13 +18,30 @@ function EvidenceCard({ item, highlighted }: { item: Evidence; highlighted: bool
       className={`evidence-card${highlighted ? " highlight" : ""}`}
     >
       <div className="src">
-        <span className="citation-chip" style={{ cursor: "default" }}>
+        <button
+          type="button"
+          className="citation-chip"
+          title="Jump to source"
+          onClick={() => onOpen?.(item)}
+        >
           {item.marker}
-        </span>
+        </button>
         {item.source_type === "web" && <span className="badge accent">WEB</span>}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <button
+          type="button"
+          className="btn ghost small"
+          style={{
+            padding: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            maxWidth: "100%",
+            fontWeight: 500,
+          }}
+          onClick={() => onOpen?.(item)}
+        >
           {item.document_name}
-        </span>
+        </button>
         {item.page != null && <span className="faint">p.{item.page}</span>}
       </div>
       {item.url && (
@@ -42,6 +67,9 @@ function EvidenceCard({ item, highlighted }: { item: Evidence; highlighted: bool
         <button className="btn ghost small" onClick={() => setExpanded(!expanded)}>
           {expanded ? "less" : "more"}
         </button>
+        <button className="btn ghost small" onClick={() => onOpen?.(item)}>
+          Source
+        </button>
       </div>
     </div>
   );
@@ -57,9 +85,11 @@ const VERDICT_BADGES: Record<string, { label: string; klass: string }> = {
 export default function EvidencePanel({
   response,
   highlightMarker,
+  onOpenSource,
 }: {
   response: ChatResponse;
   highlightMarker: number | null;
+  onOpenSource?: (item: Evidence | Citation) => void;
 }) {
   return (
     <div className="side-panel">
@@ -119,6 +149,7 @@ export default function EvidencePanel({
               key={item.marker}
               item={item}
               highlighted={highlightMarker === item.marker}
+              onOpen={onOpenSource}
             />
           ))}
         </div>

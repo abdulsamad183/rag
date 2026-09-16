@@ -113,6 +113,7 @@ async def execute_chat(
         verification=result.verification.as_dict() if result.verification else {},
         confidence=result.confidence.as_dict(),
         usage=result.trace.usage,
+        collection_ids=list(conversation.collection_ids or []),
         answer=result.answer,
         abstained=result.abstained,
         latency_ms=result.trace.elapsed_ms,

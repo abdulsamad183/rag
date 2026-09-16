@@ -58,6 +58,14 @@ class ChunkOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ChunkDetailOut(ChunkOut):
+    """Chunk plus document metadata for jump-to-source viewers."""
+
+    collection_id: uuid.UUID
+    document_name: str
+    source_type: str = ""
+
+
 class UploadResult(BaseModel):
     document: DocumentOut
     is_new_content: bool

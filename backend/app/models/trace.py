@@ -39,6 +39,7 @@ class RetrievalTrace(Base, TimestampMixin):
     verification: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     confidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     usage: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # tokens, cost, per-step latency
+    collection_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
 
     answer: Mapped[str] = mapped_column(Text, default="")
     abstained: Mapped[bool] = mapped_column(default=False)

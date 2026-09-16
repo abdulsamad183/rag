@@ -2,6 +2,7 @@ import type {
   AppConfig,
   ChatRequestBody,
   ChatResponse,
+  ChunkDetail,
   ChunkRow,
   Collection,
   Conversation,
@@ -15,6 +16,7 @@ import type {
   GraphData,
   HealthReport,
   Provider,
+  RetrievalStats,
   RunComparison,
   TraceDetail,
   TraceSummary,
@@ -87,6 +89,7 @@ export const api = {
   },
   documentChunks: (id: string, limit = 50, offset = 0) =>
     request<ChunkRow[]>(`/documents/${id}/chunks?limit=${limit}&offset=${offset}`),
+  getChunk: (id: string) => request<ChunkDetail>(`/chunks/${id}`),
   documentVersions: (id: string) => request<DocumentVersion[]>(`/documents/${id}/versions`),
   reingestDocument: (id: string) =>
     request<{ ok: boolean }>(`/documents/${id}/reingest`, { method: "POST" }),
@@ -108,6 +111,8 @@ export const api = {
 
   listTraces: (limit = 50) => request<TraceSummary[]>(`/retrieval/traces?limit=${limit}`),
   getTrace: (id: string) => request<TraceDetail>(`/retrieval/${id}`),
+  retrievalStats: (days: 1 | 7 | 30 = 7) =>
+    request<RetrievalStats>(`/retrieval/stats?days=${days}`),
 
   listDatasets: () => request<Dataset[]>("/evaluations/datasets"),
   uploadDataset: (name: string, description: string, file: File) => {
@@ -148,6 +153,7 @@ export interface StreamHandlers {
   onToken: (text: string) => void;
   onFinal: (response: ChatResponse) => void;
   onError: (message: string) => void;
+  onAbort?: () => void;
 }
 
 /** POST /chat/stream and dispatch SSE events. Returns an abort function. */
@@ -164,7 +170,11 @@ export function streamChat(body: ChatRequestBody, handlers: StreamHandlers): () 
         signal: controller.signal,
       });
     } catch {
-      if (!controller.signal.aborted) handlers.onError("Could not reach the server.");
+      if (controller.signal.aborted) {
+        handlers.onAbort?.();
+      } else {
+        handlers.onError("Could not reach the server.");
+      }
       return;
     }
     if (!response.ok || !response.body) {
@@ -218,7 +228,11 @@ export function streamChat(body: ChatRequestBody, handlers: StreamHandlers): () 
         }
       }
     } catch {
-      if (!controller.signal.aborted) handlers.onError("Stream interrupted.");
+      if (controller.signal.aborted) {
+        handlers.onAbort?.();
+      } else {
+        handlers.onError("Stream interrupted.");
+      }
     }
   })();
 

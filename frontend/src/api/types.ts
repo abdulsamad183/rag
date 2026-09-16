@@ -93,6 +93,12 @@ export interface ChunkRow {
   meta: Record<string, unknown>;
 }
 
+export interface ChunkDetail extends ChunkRow {
+  collection_id: string;
+  document_name: string;
+  source_type: string;
+}
+
 export interface UploadResult {
   document: Document;
   is_new_content: boolean;
@@ -270,8 +276,39 @@ export interface TraceDetail extends TraceSummary {
   retrieved: Record<string, unknown>[];
   verification: Record<string, unknown>;
   usage: Usage;
+  collection_ids?: string[];
   answer: string;
   error: string;
+}
+
+export interface RetrievalStats {
+  days: number;
+  totals: {
+    queries: number;
+    abstain_rate: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    estimated_cost_usd: number;
+    latency_ms: { mean: number; p50: number; p95: number };
+  };
+  by_provider: {
+    provider: string;
+    queries: number;
+    estimated_cost_usd: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    latency_ms_p50: number;
+    latency_ms_p95: number;
+    abstain_rate: number;
+  }[];
+  by_collection: {
+    collection_id: string;
+    queries: number;
+    estimated_cost_usd: number;
+    latency_ms_p50: number;
+    latency_ms_p95: number;
+    abstain_rate: number;
+  }[];
 }
 
 export interface Dataset {

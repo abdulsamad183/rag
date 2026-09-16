@@ -9,13 +9,14 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession
 from app.config import get_settings
-from app.core.errors import FileTooLargeError, ValidationFailed
+from app.core.errors import FileTooLargeError, NotFoundError, ValidationFailed
 from app.core.rate_limit import rate_limiter
 from app.models import Chunk, ChunkLevel
+from app.repositories import chunks as chunk_repo
 from app.repositories import collections as collection_repo
 from app.repositories import documents as document_repo
 from app.schemas.common import OkResponse
-from app.schemas.documents import ChunkOut, DocumentOut, DocumentVersionOut, UploadResult
+from app.schemas.documents import ChunkDetailOut, ChunkOut, DocumentOut, DocumentVersionOut, UploadResult
 from app.services.documents import delete_document as remove_document
 from app.services.documents import upload_document
 from app.services.summarize import summarize_document
@@ -97,6 +98,30 @@ async def get_document_chunks(
     )
     chunks = (await session.execute(stmt)).scalars().all()
     return [ChunkOut.model_validate(c) for c in chunks]
+
+
+@router.get("/chunks/{chunk_id}", response_model=ChunkDetailOut)
+async def get_chunk(chunk_id: uuid.UUID, session: DbSession) -> ChunkDetailOut:
+    row = await chunk_repo.get_chunk_with_document(session, chunk_id)
+    if row is None:
+        raise NotFoundError(f"Chunk {chunk_id} not found")
+    chunk, document = row
+    return ChunkDetailOut(
+        id=chunk.id,
+        document_id=chunk.document_id,
+        collection_id=chunk.collection_id,
+        level=chunk.level,
+        chunk_index=chunk.chunk_index,
+        heading=chunk.heading,
+        section_path=chunk.section_path,
+        page_start=chunk.page_start,
+        page_end=chunk.page_end,
+        content=chunk.content,
+        token_count=chunk.token_count,
+        meta=chunk.meta or {},
+        document_name=document.title or document.filename,
+        source_type=document.source_type,
+    )
 
 
 @router.get("/documents/{document_id}/raw")

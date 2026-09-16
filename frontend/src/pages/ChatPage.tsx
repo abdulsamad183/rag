@@ -16,8 +16,13 @@ import { ConfidenceBadge } from "../components/Confidence";
 import EmptyState from "../components/EmptyState";
 import EvidencePanel from "../components/EvidencePanel";
 import Markdown from "../components/Markdown";
-import Modal from "../components/Modal";
 import ProviderModelSelect from "../components/ProviderModelSelect";
+import SourceViewer, { type SourceTarget } from "../components/SourceViewer";
+import StageTimeline, {
+  STAGE_LABEL,
+  advanceStages,
+  type StageState,
+} from "../components/StageTimeline";
 import TraceSteps from "../components/TraceSteps";
 import { useApp } from "../state/AppContext";
 
@@ -29,21 +34,12 @@ const MODE_HINT: Record<ChatMode, string> = {
   research: "Graph, contradictions, self-correction",
 };
 
-const STAGE_LABEL: Record<string, string> = {
-  analyzing: "Understanding the question…",
-  retrieving: "Retrieving evidence…",
-  reranking: "Reranking candidates…",
-  generating: "Writing an answer…",
-  verifying: "Verifying claims…",
-  correcting: "Retrieving more evidence…",
-  searching_web: "Searching the web…",
-};
-
 interface ChatTurn {
   id: string;
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  stopped?: boolean;
   response?: ChatResponse;
   citations?: Citation[];
   traceId?: string | null;
@@ -124,11 +120,13 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
+  const [stageStates, setStageStates] = useState<Record<string, StageState>>({});
   const [error, setError] = useState("");
   const [panel, setPanel] = useState<ChatResponse | null>(null);
   const [highlight, setHighlight] = useState<number | null>(null);
-  const [source, setSource] = useState<Evidence | Citation | null>(null);
+  const [source, setSource] = useState<SourceTarget | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const stageSeenRef = useRef<string[]>([]);
 
   const [collectionIds, setCollectionIds] = useState<string[]>(() => loadPref("rag.cols", []));
   const [mode, setMode] = useState<ChatMode>(() => loadPref("rag.mode", "adaptive"));
@@ -254,6 +252,27 @@ export default function ChatPage() {
     setCollectionIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  function openSource(item: Evidence | Citation) {
+    const sourceUrl = "source_url" in item ? item.source_url : item.url;
+    const sourceType =
+      "source_type" in item && item.source_type
+        ? item.source_type
+        : sourceUrl?.startsWith("http")
+          ? "web"
+          : "";
+    const snippet = "snippet" in item ? item.snippet : "content" in item ? item.content : "";
+    setSource({
+      documentId: item.document_id,
+      chunkId: item.chunk_id,
+      documentName: item.document_name,
+      page: item.page,
+      section: item.section,
+      sourceUrl,
+      sourceType,
+      snippet,
+    });
+  }
+
   function onCite(marker: number) {
     setHighlight(marker);
     const found = panel?.evidence.find((e) => e.marker === marker);
@@ -261,7 +280,20 @@ export default function ChatPage() {
       document.getElementById(`evidence-${marker}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
     const cite = panel?.citations.find((c) => c.marker === marker);
-    if (cite) setSource(cite);
+    if (cite) openSource(cite);
+    else if (found) openSource(found);
+  }
+
+  function resetStreamUi() {
+    setBusy(false);
+    setStage("");
+    setStageStates({});
+    stageSeenRef.current = [];
+    abortRef.current = null;
+  }
+
+  function stopStreaming() {
+    abortRef.current?.();
   }
 
   async function send() {
@@ -274,7 +306,10 @@ export default function ChatPage() {
     setError("");
     setInput("");
     setBusy(true);
+    const initial = advanceStages([], "analyzing");
+    stageSeenRef.current = initial.seen;
     setStage("analyzing");
+    setStageStates(initial.states);
     const userTurn: ChatTurn = { id: `u-${Date.now()}`, role: "user", content: text };
     const assistantId = `a-${Date.now()}`;
     setTurns((prev) => [...prev, userTurn, { id: assistantId, role: "assistant", content: "", streaming: true }]);
@@ -301,7 +336,12 @@ export default function ChatPage() {
     }
 
     abortRef.current = streamChat(body, {
-      onStatus: (s) => setStage(s),
+      onStatus: (s) => {
+        const next = advanceStages(stageSeenRef.current, s);
+        stageSeenRef.current = next.seen;
+        setStage(s);
+        setStageStates(next.states);
+      },
       onStep: (step) => {
         setTurns((prev) =>
           prev.map((t) =>
@@ -334,22 +374,36 @@ export default function ChatPage() {
           ),
         );
         setPanel(response);
-        setBusy(false);
-        setStage("");
+        resetStreamUi();
         void refreshConversations();
       },
       onError: (message) => {
         setError(message);
-        setBusy(false);
-        setStage("");
+        resetStreamUi();
         setTurns((prev) => prev.filter((t) => t.id !== assistantId && t.id !== userTurn.id));
         setInput(text);
+      },
+      onAbort: () => {
+        setTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId
+              ? {
+                  ...t,
+                  streaming: false,
+                  stopped: true,
+                  content: t.content.trim() || "_(stopped)_",
+                }
+              : t,
+          ),
+        );
+        resetStreamUi();
       },
     });
   }
 
   function newChat() {
     abortRef.current?.();
+    resetStreamUi();
     setTurns([]);
     setPanel(null);
     setError("");
@@ -425,10 +479,24 @@ export default function ChatPage() {
                         Insufficient evidence — the system declined to guess.
                       </div>
                     )}
+                    {turn.stopped && (
+                      <div className="meta-row" style={{ marginBottom: 8 }}>
+                        <span className="badge yellow">Stopped</span>
+                      </div>
+                    )}
                     {turn.content ? (
                       <Markdown text={turn.content} onCite={onCite} />
                     ) : (
                       <span className="dim">…</span>
+                    )}
+                    {turn.streaming && Object.keys(stageStates).length > 0 && (
+                      <div className="live-trace">
+                        <div className="live-trace-head">
+                          <span>Stages</span>
+                          <span className="badge accent">live</span>
+                        </div>
+                        <StageTimeline states={stageStates} />
+                      </div>
                     )}
                     {(turn.streaming || (turn.liveSteps && turn.liveSteps.length > 0)) && (
                       <div className="live-trace">
@@ -554,9 +622,19 @@ export default function ChatPage() {
               <button className="btn ghost small" type="button" onClick={() => setShowAdvanced(!showAdvanced)}>
                 {showAdvanced ? "Basic" : "Advanced"}
               </button>
-              <button className="send-btn" disabled={composerDisabled || !input.trim()} onClick={() => void send()}>
-                ↑
-              </button>
+              {busy ? (
+                <button className="stop-btn" type="button" onClick={stopStreaming} title="Stop generation">
+                  Stop
+                </button>
+              ) : (
+                <button
+                  className="send-btn"
+                  disabled={composerDisabled || !input.trim()}
+                  onClick={() => void send()}
+                >
+                  ↑
+                </button>
+              )}
             </div>
             {showAdvanced && (
               <div className="advanced-grid">
@@ -671,42 +749,11 @@ export default function ChatPage() {
         <EvidencePanel
           response={panel}
           highlightMarker={highlight}
+          onOpenSource={openSource}
         />
       )}
 
-      {source && (
-        <Modal title={source.document_name} onClose={() => setSource(null)}>
-          <dl className="kv">
-            <dt>Page</dt>
-            <dd>{source.page ?? "—"}</dd>
-            <dt>Section</dt>
-            <dd>{source.section || "—"}</dd>
-            {"relevance_score" in source && (
-              <>
-                <dt>Relevance</dt>
-                <dd>{source.relevance_score.toFixed(3)}</dd>
-              </>
-            )}
-            {("source_url" in source ? source.source_url : source.url) && (
-              <>
-                <dt>URL</dt>
-                <dd>
-                  <a
-                    href={"source_url" in source ? source.source_url : source.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {"source_url" in source ? source.source_url : source.url}
-                  </a>
-                </dd>
-              </>
-            )}
-          </dl>
-          <div className="card" style={{ marginTop: 14, background: "var(--bg-inset)" }}>
-            {"snippet" in source ? source.snippet : "content" in source ? source.content : ""}
-          </div>
-        </Modal>
-      )}
+      {source && <SourceViewer target={source} onClose={() => setSource(null)} />}
     </div>
   );
 }

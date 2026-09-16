@@ -3,6 +3,7 @@ providers. Covers the golden path a user takes in the UI."""
 
 import asyncio
 import json
+import uuid
 
 BENCHMARK_DOC = """# Aurora Benchmark Report 2024
 
@@ -259,3 +260,50 @@ async def test_traces_listing(client):
     traces = await client.get("/api/v1/retrieval/traces")
     assert traces.status_code == 200
     assert len(traces.json()) >= 1
+
+
+async def test_chunk_detail_and_retrieval_stats(client):
+    collection = await create_collection(client, "Stats KB")
+    document = await upload_and_wait(client, collection["id"], "faq.md", FAQ_DOC)
+    chunks = await client.get(f"/api/v1/documents/{document['id']}/chunks")
+    assert chunks.status_code == 200
+    assert chunks.json()
+    chunk_id = chunks.json()[0]["id"]
+
+    detail = await client.get(f"/api/v1/chunks/{chunk_id}")
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["id"] == chunk_id
+    assert body["document_id"] == document["id"]
+    assert body["collection_id"] == collection["id"]
+    assert body["document_name"]
+    assert body["content"]
+
+    missing = await client.get(f"/api/v1/chunks/{uuid.uuid4()}")
+    assert missing.status_code == 404
+
+    chat = await client.post(
+        "/api/v1/chat",
+        json={
+            "message": "What does AUR-1002 mean?",
+            "collection_ids": [collection["id"]],
+            "mode": "fast",
+            "provider": "mock",
+        },
+    )
+    assert chat.status_code == 200, chat.text
+    trace = await client.get(f"/api/v1/retrieval/{chat.json()['trace_id']}")
+    assert trace.status_code == 200
+    assert collection["id"] in trace.json().get("collection_ids", [])
+
+    stats = await client.get("/api/v1/retrieval/stats?days=7")
+    assert stats.status_code == 200, stats.text
+    payload = stats.json()
+    assert payload["days"] == 7
+    assert payload["totals"]["queries"] >= 1
+    assert "latency_ms" in payload["totals"]
+    assert payload["by_provider"]
+    assert any(c["collection_id"] == collection["id"] for c in payload["by_collection"])
+
+    bad = await client.get("/api/v1/retrieval/stats?days=14")
+    assert bad.status_code == 422

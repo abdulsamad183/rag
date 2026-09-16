@@ -1,24 +1,59 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
-import type { HealthReport, TraceSummary } from "../api/types";
+import type { HealthReport, RetrievalStats, TraceSummary } from "../api/types";
 import EmptyState from "../components/EmptyState";
 import { useApp } from "../state/AppContext";
 import { confidenceScore, formatDate, formatMs } from "../utils/format";
+
+type WindowDays = 1 | 7 | 30;
+
+function formatUsd(value: number): string {
+  if (value <= 0) return "$0";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
+function formatPct(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`;
+}
 
 export default function DashboardPage() {
   const { collections, providers, backendDown, config } = useApp();
   const [health, setHealth] = useState<HealthReport | null>(null);
   const [traces, setTraces] = useState<TraceSummary[]>([]);
+  const [statsDays, setStatsDays] = useState<WindowDays>(7);
+  const [stats, setStats] = useState<RetrievalStats | null>(null);
+
+  const collectionName = useMemo(() => {
+    const map = new Map(collections.map((c) => [c.id, c.name]));
+    return (id: string) => (id === "none" ? "Web / none" : map.get(id) ?? id.slice(0, 8));
+  }, [collections]);
 
   useEffect(() => {
     api.ready().then(setHealth).catch(() => setHealth(null));
     api.listTraces(8).then(setTraces).catch(() => setTraces([]));
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .retrievalStats(statsDays)
+      .then((data) => {
+        if (!cancelled) setStats(data);
+      })
+      .catch(() => {
+        if (!cancelled) setStats(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [statsDays]);
+
   const docs = collections.reduce((n, c) => n + c.document_count, 0);
   const chunks = collections.reduce((n, c) => n + c.chunk_count, 0);
   const configured = providers.filter((p) => p.configured).length;
+  const totals = stats?.totals;
 
   return (
     <div className="page">
@@ -56,6 +91,121 @@ export default function DashboardPage() {
         <div className="stat-tile">
           <div className="label">Providers</div>
           <div className="value">{configured}</div>
+        </div>
+      </div>
+
+      <div className="row spread" style={{ marginTop: 28, marginBottom: 12, alignItems: "center" }}>
+        <h2 style={{ fontSize: 15, margin: 0 }}>Cost &amp; latency</h2>
+        <div className="chip-row">
+          {([1, 7, 30] as WindowDays[]).map((d) => (
+            <button
+              key={d}
+              type="button"
+              className={`chip${statsDays === d ? " on" : ""}`}
+              onClick={() => setStatsDays(d)}
+            >
+              {d === 1 ? "24h" : `${d}d`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-tile">
+          <div className="label">Queries</div>
+          <div className="value">{totals?.queries ?? "—"}</div>
+        </div>
+        <div className="stat-tile">
+          <div className="label">Est. cost</div>
+          <div className="value" style={{ fontSize: 22 }}>
+            {totals ? formatUsd(totals.estimated_cost_usd) : "—"}
+          </div>
+        </div>
+        <div className="stat-tile">
+          <div className="label">Latency p50 / p95</div>
+          <div className="value" style={{ fontSize: 18 }}>
+            {totals
+              ? `${formatMs(Math.round(totals.latency_ms.p50))} / ${formatMs(Math.round(totals.latency_ms.p95))}`
+              : "—"}
+          </div>
+        </div>
+        <div className="stat-tile">
+          <div className="label">Abstain rate</div>
+          <div className="value" style={{ fontSize: 22 }}>
+            {totals ? formatPct(totals.abstain_rate) : "—"}
+          </div>
+        </div>
+      </div>
+
+      {totals && totals.queries > 0 && (
+        <div className="faint" style={{ fontSize: 12, marginTop: 8 }}>
+          {totals.prompt_tokens.toLocaleString()} prompt · {totals.completion_tokens.toLocaleString()}{" "}
+          completion tokens · mean latency {formatMs(Math.round(totals.latency_ms.mean))}
+        </div>
+      )}
+
+      <div className="grid-cards" style={{ marginTop: 18 }}>
+        <div className="card">
+          <h3 style={{ marginBottom: 12 }}>By provider</h3>
+          {!stats?.by_provider.length ? (
+            <p className="dim">No queries in this window.</p>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Queries</th>
+                  <th>Cost</th>
+                  <th>p50</th>
+                  <th>p95</th>
+                  <th>Abstain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.by_provider.map((row) => (
+                  <tr key={row.provider}>
+                    <td className="mono">{row.provider}</td>
+                    <td>{row.queries}</td>
+                    <td>{formatUsd(row.estimated_cost_usd)}</td>
+                    <td>{formatMs(Math.round(row.latency_ms_p50))}</td>
+                    <td>{formatMs(Math.round(row.latency_ms_p95))}</td>
+                    <td>{formatPct(row.abstain_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="card">
+          <h3 style={{ marginBottom: 12 }}>By collection</h3>
+          {!stats?.by_collection.length ? (
+            <p className="dim">No queries in this window.</p>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Collection</th>
+                  <th>Queries</th>
+                  <th>Cost</th>
+                  <th>p50</th>
+                  <th>p95</th>
+                  <th>Abstain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.by_collection.map((row) => (
+                  <tr key={row.collection_id}>
+                    <td>{collectionName(row.collection_id)}</td>
+                    <td>{row.queries}</td>
+                    <td>{formatUsd(row.estimated_cost_usd)}</td>
+                    <td>{formatMs(Math.round(row.latency_ms_p50))}</td>
+                    <td>{formatMs(Math.round(row.latency_ms_p95))}</td>
+                    <td>{formatPct(row.abstain_rate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
 
